@@ -1,0 +1,28 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "DNDND: Run app",
+            "type": "shell",
+            "command": "py -3.11 -m uv run dndnd",
+            "isBackground": true,
+            "problemMatcher": [],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        },
+        {
+            "label": "DNDND: Test",
+            "type": "shell",
+            "command": "py -3.11 -m uv run pytest",
+            "problemMatcher": "$pytest"
+        },
+        {
+            "label": "DNDND: Check",
+            "type": "shell",
+            "command": "py -3.11 -m uv run ruff check .; py -3.11 -m uv run mypy src",
+            "problemMatcher": []
+        }
+    ]
+}

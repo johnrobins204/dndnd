@@ -1,0 +1,46 @@
+[project]
+name = "dndnd"
+version = "0.1.0"
+description = "A local-first D&D 5e DM workspace powered by Streamlit and Ollama"
+readme = "README.md"
+authors = [
+    { name = "john.robins204", email = "john.robins204@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "alembic>=1.19.2",
+    "coolname>=5.0.0",
+    "httpx>=0.28.1",
+    "pydantic-settings>=2.15.0",
+    "sqlalchemy>=2.0.52",
+    "streamlit>=1.63.0",
+]
+
+[project.scripts]
+dndnd = "dndnd.__main__:main"
+
+[dependency-groups]
+dev = [
+    "mypy>=1.18.0",
+    "pytest>=8.4.0",
+    "pytest-cov>=6.2.0",
+    "ruff>=0.13.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+
+[build-system]
+requires = ["uv_build>=0.12.10,<0.13.0"]
+build-backend = "uv_build"
