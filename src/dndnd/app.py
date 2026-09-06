@@ -1,7 +1,6 @@
 import json
 import random
 import time
-from datetime import datetime
 from html import escape
 from typing import Any, cast
 
@@ -11,8 +10,13 @@ from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
 from dndnd.config import get_settings
+from dndnd.data.repositories.worlds import WorldRepository
 from dndnd.db import create_database_engine, initialize_database, session_scope
-from dndnd.llm import OllamaClient, OllamaError
+from dndnd.domain.characters import point_buy_total as domain_point_buy_total
+from dndnd.domain.characters import (
+    proficiency_bonus_for_level as domain_proficiency_bonus_for_level,
+)
+from dndnd.intelligence.client import OllamaClient, OllamaError
 from dndnd.models import (
     Alignment,
     Campaign,
@@ -43,11 +47,6 @@ from dndnd.models import (
     QuestStatus,
     QuestTrigger,
     QuestTriggerType,
-    SessionEntry,
-    SessionEntryKind,
-    SessionRun,
-    SessionRunStatus,
-    WorldDraft,
     WorldDraftChange,
     WorldFaction,
     WorldHistoryEvent,
@@ -67,6 +66,17 @@ from dndnd.rules import (
     COMBAT_RULES_REFERENCE,
     RuleReference,
 )
+from dndnd.ui.campaign import select_campaign as render_campaign_context
+from dndnd.ui.navigation import workspace_navigation as render_workspace_navigation
+from dndnd.ui.pages.briefing import render as render_briefing
+from dndnd.ui.pages.combat import render as render_combat_page
+from dndnd.ui.pages.journal import render as render_journal_page
+from dndnd.ui.pages.party import render as render_party_page
+from dndnd.ui.pages.quests import render as render_quests_page
+from dndnd.ui.pages.table import render as render_table_page
+from dndnd.ui.pages.world import render as render_world_page
+from dndnd.ui.pages.writer import render as render_writer_page
+from dndnd.ui.theme import render_theme as render_ui_theme
 from dndnd.world_checks import check_world_draft
 from dndnd.world_export import build_world_brief
 from dndnd.world_questions import (
@@ -76,6 +86,8 @@ from dndnd.world_questions import (
     questions_for_step,
     world_step_order,
 )
+
+world_repository = WorldRepository()
 
 st.set_page_config(page_title="DNDND", page_icon="🎲", layout="wide")
 
@@ -200,28 +212,6 @@ def render_theme() -> None:
     )
 
 
-def render_campaign_briefing(campaign: Campaign) -> None:
-    name = escape(campaign.name)
-    summary = escape(
-        campaign.summary or "A new campaign waits for its first mark in the chronicle."
-    )
-    st.markdown(
-        f"""
-        <section class="campaign-hero">
-            <div class="eyebrow">Campaign briefing · D&D 5e (2024)</div>
-            <h1>{name}</h1>
-            <p>{summary}</p>
-            <div class="hero-meta">
-                <span>⌖ Local campaign desk</span>
-                <span>✦ Player-facing stories</span>
-                <span>◈ DM-only state</span>
-            </div>
-        </section>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
 @st.cache_resource
 def database_engine() -> Engine:
     engine = create_database_engine()
@@ -229,57 +219,51 @@ def database_engine() -> Engine:
     return engine
 
 
-def campaign_selector(session: Session) -> Campaign | None:
-    campaigns = list(session.scalars(select(Campaign).order_by(Campaign.name)))
-    if not campaigns:
-        st.markdown("## Light the first torch")
-        st.write("Create a campaign to open the table, codex, quest board, and chronicle.")
-        with st.form("new_campaign", clear_on_submit=True):
-            name = st.text_input("Campaign name", placeholder="The Lantern March")
-            summary = st.text_area("Premise", placeholder="What is already in motion?")
-            if st.form_submit_button("Create campaign", type="primary"):
-                if name.strip():
-                    session.add(Campaign(name=name.strip(), summary=summary.strip()))
-                    session.commit()
-                    st.rerun()
-                st.error("Campaign name is required.")
-        return None
-
-    selector, details = st.columns([2, 3])
-    with selector:
-        selected = st.selectbox("Campaign", campaigns, format_func=lambda item: item.name)
-    with details:
-        st.caption("Current campaign")
-        st.markdown(f"**{selected.name}** · D&D 5e (2024)")
-    with st.expander("Create another campaign"), st.form(
-        "new_campaign", clear_on_submit=True
-    ):
-        name = st.text_input("Campaign name")
-        summary = st.text_area("Premise")
-        if st.form_submit_button("Create campaign") and name.strip():
-            session.add(Campaign(name=name.strip(), summary=summary.strip()))
-            session.commit()
-            st.rerun()
-    return selected
-
-
 def campaign_rows(session: Session, model: Any, campaign_id: int) -> list[Any]:
     return list(session.scalars(select(model).where(model.campaign_id == campaign_id)))
 
 
 BACKGROUND_OPTIONS = [
-    "Acolyte", "Artisan", "Charlatan", "Criminal", "Entertainer", "Farmer",
-    "Guard", "Guide", "Hermit", "Merchant", "Noble", "Pilgrim", "Sage",
-    "Sailor", "Scribe", "Soldier", "Wayfarer",
+    "Acolyte",
+    "Artisan",
+    "Charlatan",
+    "Criminal",
+    "Entertainer",
+    "Farmer",
+    "Guard",
+    "Guide",
+    "Hermit",
+    "Merchant",
+    "Noble",
+    "Pilgrim",
+    "Sage",
+    "Sailor",
+    "Scribe",
+    "Soldier",
+    "Wayfarer",
 ]
 SPELLCASTING_ABILITIES = {
-    "Bard": "Charisma", "Cleric": "Wisdom", "Druid": "Wisdom", "Ranger": "Wisdom",
-    "Sorcerer": "Charisma", "Warlock": "Charisma", "Wizard": "Intelligence",
+    "Bard": "Charisma",
+    "Cleric": "Wisdom",
+    "Druid": "Wisdom",
+    "Ranger": "Wisdom",
+    "Sorcerer": "Charisma",
+    "Warlock": "Charisma",
+    "Wizard": "Intelligence",
 }
 HIT_DICE = {
-    "Barbarian": "d12", "Fighter": "d10", "Paladin": "d10", "Ranger": "d10",
-    "Bard": "d8", "Cleric": "d8", "Druid": "d8", "Monk": "d8", "Rogue": "d8",
-    "Sorcerer": "d6", "Wizard": "d6", "Warlock": "d8",
+    "Barbarian": "d12",
+    "Fighter": "d10",
+    "Paladin": "d10",
+    "Ranger": "d10",
+    "Bard": "d8",
+    "Cleric": "d8",
+    "Druid": "d8",
+    "Monk": "d8",
+    "Rogue": "d8",
+    "Sorcerer": "d6",
+    "Wizard": "d6",
+    "Warlock": "d8",
 }
 HIT_DIE_SIZES = {class_name: int(hit_die[1:]) for class_name, hit_die in HIT_DICE.items()}
 RANDOM_CONCEPTS = [
@@ -333,7 +317,7 @@ def random_character_draft(players: list[Player]) -> dict[str, Any]:
         "armor_class": 10 + (ability_values["Dexterity"] - 10) // 2,
         "max_hp": max(1, HIT_DIE_SIZES[class_name] + constitution_modifier),
         "speed": 35 if ancestry == "Goliath" else 30,
-        "proficiency_bonus": proficiency_bonus_for_level(1),
+        "proficiency_bonus": domain_proficiency_bonus_for_level(1),
         "passive_perception": 10 + wisdom_modifier,
         "hit_dice": HIT_DICE[class_name],
         "spellcasting_ability": SPELLCASTING_ABILITIES.get(class_name, ""),
@@ -342,9 +326,7 @@ def random_character_draft(players: list[Player]) -> dict[str, Any]:
     }
 
 
-ABILITY_NAMES = [
-    "Strength", "Dexterity", "Constitution", "Intelligence", "Wisdom", "Charisma"
-]
+ABILITY_NAMES = ["Strength", "Dexterity", "Constitution", "Intelligence", "Wisdom", "Charisma"]
 DICE_FACES = ["⚀", "⚁", "⚂", "⚃", "⚄", "⚅"]
 POINT_BUY_BUDGET = 27
 POINT_BUY_COSTS = {8: 0, 9: 1, 10: 2, 11: 3, 12: 4, 13: 5, 14: 7, 15: 9}
@@ -424,220 +406,6 @@ def animate_ability_scores(method: str) -> dict[str, int]:
     return scores
 
 
-def workspace_navigation() -> str:
-    st.sidebar.markdown("### Workspace")
-    return st.sidebar.radio(
-        "Workspace",
-        ["Briefing", "The Table", "Party", "World", "Journal", "Quests", "Combat", "Writer"],
-        key="workspace_view",
-        label_visibility="collapsed",
-    )
-
-
-def table_page(session: Session, campaign: Campaign) -> None:
-    st.subheader("The Table")
-    st.caption("Run the session, keep the fiction moving, and capture canon as it happens.")
-    runs = list(
-        session.scalars(
-            select(SessionRun)
-            .where(SessionRun.campaign_id == campaign.id)
-            .order_by(SessionRun.created_at.desc())
-        )
-    )
-    with st.expander("Prepare a new session", expanded=not runs), st.form(
-        "new_session_run", clear_on_submit=True
-    ):
-        title = st.text_input("Session title", placeholder="The lighthouse below the tide")
-        session_number = st.number_input("Session number", 0, 9999, 0)
-        summary = st.text_area("Preparation notes")
-        if st.form_submit_button("Create session", type="primary") and title.strip():
-            session.add(
-                SessionRun(
-                    campaign_id=campaign.id,
-                    title=title.strip(),
-                    session_number=session_number or None,
-                    summary=summary,
-                )
-            )
-            session.commit()
-            st.rerun()
-    if not runs:
-        st.info("Create a session to open the table view.")
-        return
-
-    current = st.selectbox(
-        "Session", runs, format_func=lambda item: f"{item.title} · {item.status}"
-    )
-    header_left, header_right = st.columns([3, 1])
-    with header_left:
-        st.markdown(f"### {current.title}")
-        st.caption(
-            f"{current.status} · Scene: {current.current_scene or 'Not set'} · "
-            f"{len(current.entries)} transcript entries"
-        )
-    with header_right:
-        if current.status != SessionRunStatus.ACTIVE and st.button(
-            "Begin session", key=f"begin_session_{current.id}", type="primary"
-        ):
-            current.status = SessionRunStatus.ACTIVE
-            current.started_at = datetime.now()
-            current.entries.append(
-                SessionEntry(kind=SessionEntryKind.SYSTEM, content="Session began.")
-            )
-            session.commit()
-            st.rerun()
-        if current.status == SessionRunStatus.ACTIVE and st.button(
-            "Close session", key=f"close_session_{current.id}"
-        ):
-            current.status = SessionRunStatus.COMPLETE
-            current.ended_at = datetime.now()
-            current.entries.append(
-                SessionEntry(kind=SessionEntryKind.SYSTEM, content="Session closed.")
-            )
-            session.commit()
-            st.rerun()
-
-    transcript, context = st.columns([2, 1])
-    with transcript:
-        with st.form(f"table_command_{current.id}", clear_on_submit=True):
-            command = st.text_input(
-                "Table input",
-                placeholder=(
-                    "/scene The drowned archive  ·  /say The bell rings below  ·  "
-                    "/note Ask about the sigil"
-                ),
-                label_visibility="collapsed",
-            )
-            submitted = st.form_submit_button("Capture", type="primary", use_container_width=True)
-        if submitted and command.strip():
-            raw = command.strip()
-            lowered = raw.casefold()
-            if lowered.startswith("/scene "):
-                scene = raw[7:].strip()
-                current.current_scene = scene
-                entry = SessionEntry(kind=SessionEntryKind.SCENE, content=scene)
-            elif lowered.startswith("/say "):
-                entry = SessionEntry(kind=SessionEntryKind.NARRATION, content=raw[5:].strip())
-            elif lowered.startswith("/note "):
-                entry = SessionEntry(
-                    kind=SessionEntryKind.DM_NOTE, content=raw[6:].strip(), is_dm_only=True
-                )
-            else:
-                entry = SessionEntry(kind=SessionEntryKind.TABLE_NOTE, content=raw)
-            current.entries.append(entry)
-            if current.status == SessionRunStatus.PLANNED:
-                current.status = SessionRunStatus.ACTIVE
-                current.started_at = datetime.now()
-            session.commit()
-            st.rerun()
-        st.markdown("#### Transcript")
-        if not current.entries:
-            st.info("The table is quiet. Begin with a scene, narration, or DM note above.")
-        for entry in current.entries:
-            if entry.kind == SessionEntryKind.SCENE:
-                st.markdown(f"##### Scene · {entry.content}")
-            elif entry.is_dm_only:
-                st.warning(f"DM note · {entry.content}")
-            elif entry.kind == SessionEntryKind.NARRATION:
-                st.markdown(f"> {entry.content}")
-            elif entry.kind == SessionEntryKind.SYSTEM:
-                st.caption(entry.content)
-            else:
-                st.markdown(f"**Table note** · {entry.content}")
-            st.caption(f"{entry.created_at:%H:%M}")
-    with context:
-        st.markdown("#### At a glance")
-        active_quests = list(
-            session.scalars(
-                select(Quest)
-                .where(Quest.campaign_id == campaign.id, Quest.status == QuestStatus.ACTIVE)
-                .order_by(Quest.title)
-                .limit(5)
-            )
-        )
-        st.markdown("**Active threads**")
-        for quest in active_quests:
-            st.markdown(f"- {quest.title}")
-        characters = campaign_rows(session, Character, campaign.id)
-        st.markdown("**Present cast**")
-        for character in characters[:8]:
-            st.markdown(f"- {character.name} · {character.current_hp}/{character.max_hp} HP")
-        with st.form(f"scene_state_{current.id}"):
-            scene = st.text_input("Current scene", value=current.current_scene)
-            if st.form_submit_button("Update scene") and scene.strip():
-                current.current_scene = scene.strip()
-                current.entries.append(
-                    SessionEntry(kind=SessionEntryKind.SCENE, content=scene.strip())
-                )
-                session.commit()
-                st.rerun()
-
-
-def dashboard(session: Session, campaign: Campaign) -> None:
-    render_campaign_briefing(campaign)
-    columns = st.columns(4)
-    for column, model, label in zip(
-        columns,
-        [Character, Location, Quest, JournalEntry],
-        ["Characters", "Locations", "Quests", "Journal entries"],
-        strict=True,
-    ):
-        column.metric(label, len(campaign_rows(session, model, campaign.id)))
-    active_quests = list(
-        session.scalars(
-            select(Quest)
-            .where(Quest.campaign_id == campaign.id, Quest.status == QuestStatus.ACTIVE)
-            .order_by(Quest.title)
-        )
-    )
-    recent_entries = list(
-        session.scalars(
-            select(JournalEntry)
-            .where(JournalEntry.campaign_id == campaign.id)
-            .order_by(JournalEntry.occurred_at.desc())
-            .limit(3)
-        )
-    )
-    left, right = st.columns(2)
-    with left:
-        st.markdown("#### Active threads")
-        if active_quests:
-            for quest in active_quests:
-                st.markdown(f"**{quest.title}**  \n{quest.objective or 'Objective not recorded.'}")
-        else:
-            st.info("No active quests yet. Add the first thread from the Quests tab.")
-    with right:
-        st.markdown("#### Last table notes")
-        if recent_entries:
-            for entry in recent_entries:
-                st.markdown(f"**{entry.title}** · {entry.occurred_at:%b %d}  \n{entry.body[:180]}")
-        else:
-            st.info("Your table history will appear here after the first journal entry.")
-    st.markdown(
-        """
-        <div class="brief-grid">
-            <article class="brief-card">
-                <div class="eyebrow">Cartography</div>
-                <h3>Places worth returning to</h3>
-                <p>Keep locations, maps, thresholds, and secrets close to the story they serve.</p>
-            </article>
-            <article class="brief-card">
-                <div class="eyebrow">The cast</div>
-                <h3>People with unfinished business</h3>
-                <p>Characters and NPCs should feel connected to motives, memories, and
-                consequences.</p>
-            </article>
-            <article class="brief-card">
-                <div class="eyebrow">The next move</div>
-                <h3>Prepare the table</h3>
-                <p>Open The Table to frame a scene, capture a note, or begin tonight's session.</p>
-            </article>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
 def alignment_grid(current: str, widget_key: str) -> str:
     st.markdown("**Alignment**")
     st.caption("Optional. Choose a cell or leave alignment unset.")
@@ -666,7 +434,8 @@ def render_rule_reference(reference: RuleReference, key: str) -> None:
     official_link = (
         f"<a href='{escape(reference.official_url)}' target='_blank' rel='noreferrer'>"
         "Official 2024 rules ↗</a> · "
-        if reference.official_url else ""
+        if reference.official_url
+        else ""
     )
     st.markdown(
         f"<div class='empty-callout' key='{escape(key)}'>"
@@ -737,8 +506,13 @@ def character_workspace(session: Session, campaign: Campaign, character: Charact
             if st.form_submit_button("Add character entry") and title.strip() and body.strip():
                 session.add(
                     CharacterJournalEntry(
-                        character=character, title=title.strip(), kind=kind, body=body.strip(),
-                        session_number=session_number or None, is_private=private, tags=tags,
+                        character=character,
+                        title=title.strip(),
+                        kind=kind,
+                        body=body.strip(),
+                        session_number=session_number or None,
+                        is_private=private,
+                        tags=tags,
                     )
                 )
                 session.commit()
@@ -749,14 +523,14 @@ def character_workspace(session: Session, campaign: Campaign, character: Charact
             label = "DM-only" if entry.is_private else "table-visible"
             with st.expander(f"{entry.title} · {entry.kind} · {label}"):
                 st.caption(
-                    f"Session {entry.session_number or 'unspecified'} · "
-                    f"{entry.tags or 'untagged'}"
+                    f"Session {entry.session_number or 'unspecified'} · {entry.tags or 'untagged'}"
                 )
                 st.write(entry.body)
     with inventory_tab:
         items = campaign_rows(session, Item, campaign.id)
-        with st.expander("Create campaign item"), st.form(
-            f"new_item_{character.id}", clear_on_submit=True
+        with (
+            st.expander("Create campaign item"),
+            st.form(f"new_item_{character.id}", clear_on_submit=True),
         ):
             item_name = st.text_input("Item name")
             item_kind = st.selectbox("Item type", [item.value for item in ItemKind])
@@ -765,8 +539,11 @@ def character_workspace(session: Session, campaign: Campaign, character: Charact
             if st.form_submit_button("Create item") and item_name.strip():
                 session.add(
                     Item(
-                        campaign_id=campaign.id, name=item_name.strip(), kind=item_kind,
-                        description=description, rarity=rarity,
+                        campaign_id=campaign.id,
+                        name=item_name.strip(),
+                        kind=item_kind,
+                        description=description,
+                        rarity=rarity,
                     )
                 )
                 session.commit()
@@ -781,8 +558,12 @@ def character_workspace(session: Session, campaign: Campaign, character: Charact
                 if st.form_submit_button("Add to inventory"):
                     session.add(
                         InventoryItem(
-                            character=character, item=item, quantity=quantity,
-                            equipped=equipped, attuned=attuned, notes=notes,
+                            character=character,
+                            item=item,
+                            quantity=quantity,
+                            equipped=equipped,
+                            attuned=attuned,
+                            notes=notes,
                         )
                     )
                     session.commit()
@@ -814,9 +595,13 @@ def character_workspace(session: Session, campaign: Campaign, character: Charact
             if st.form_submit_button("Add feature") and name.strip():
                 session.add(
                     CharacterFeature(
-                        character=character, name=name.strip(), category=category,
-                        source=source, description=description,
-                        uses_max=uses_max or None, uses_remaining=uses_max or None,
+                        character=character,
+                        name=name.strip(),
+                        category=category,
+                        source=source,
+                        description=description,
+                        uses_max=uses_max or None,
+                        uses_remaining=uses_max or None,
                     )
                 )
                 session.commit()
@@ -848,9 +633,7 @@ def new_character_interview(session: Session, campaign: Campaign, players: list[
             st.session_state[f"interview_ancestry_{campaign.id}"] = draft["ancestry"]
             st.session_state[f"interview_class_{campaign.id}"] = draft["class_name"]
             st.rerun()
-        alignment = alignment_grid(
-            draft.get("alignment", ""), f"alignment_interview_{campaign.id}"
-        )
+        alignment = alignment_grid(draft.get("alignment", ""), f"alignment_interview_{campaign.id}")
         ancestry_options = [item.value for item in CharacterAncestry]
         class_options = [item.value for item in CharacterClass]
         ancestry = st.selectbox(
@@ -858,7 +641,8 @@ def new_character_interview(session: Session, campaign: Campaign, players: list[
             ancestry_options,
             index=(
                 ancestry_options.index(draft["ancestry"])
-                if draft.get("ancestry") in ancestry_options else 0
+                if draft.get("ancestry") in ancestry_options
+                else 0
             ),
             key=f"interview_ancestry_{campaign.id}",
         )
@@ -868,7 +652,8 @@ def new_character_interview(session: Session, campaign: Campaign, players: list[
             class_options,
             index=(
                 class_options.index(draft["class_name"])
-                if draft.get("class_name") in class_options else 0
+                if draft.get("class_name") in class_options
+                else 0
             ),
             key=f"interview_class_{campaign.id}",
         )
@@ -878,16 +663,19 @@ def new_character_interview(session: Session, campaign: Campaign, players: list[
             name = left.text_input("Character name", value=draft.get("name", ""))
             kind = left.selectbox("Character type", [item.value for item in CharacterKind])
             player_id = left.selectbox(
-                "Player", [None, *[player.id for player in players]],
+                "Player",
+                [None, *[player.id for player in players]],
                 format_func=lambda value: (
-                    "Unassigned" if value is None
+                    "Unassigned"
+                    if value is None
                     else next(player.name for player in players if player.id == value)
                 ),
             )
             level = right.number_input("Starting level", 1, 20, draft.get("level", 1))
             background = st.text_input("Background", value=draft.get("background", ""))
             concept = st.text_area(
-                "Concept and motivations", value=draft.get("concept", ""),
+                "Concept and motivations",
+                value=draft.get("concept", ""),
                 placeholder="What does this character want, fear, or protect?",
             )
             if st.form_submit_button("Continue to ability scores", type="primary"):
@@ -895,10 +683,15 @@ def new_character_interview(session: Session, campaign: Campaign, players: list[
                     st.error("Name, ancestry, and class or role are required.")
                 else:
                     draft.update(
-                        name=name.strip(), kind=kind, player_id=player_id,
-                        ancestry=ancestry.strip(), class_name=class_name.strip(),
-                        level=level, background=background.strip(),
-                        alignment=alignment.strip(), concept=concept.strip(),
+                        name=name.strip(),
+                        kind=kind,
+                        player_id=player_id,
+                        ancestry=ancestry.strip(),
+                        class_name=class_name.strip(),
+                        level=level,
+                        background=background.strip(),
+                        alignment=alignment.strip(),
+                        concept=concept.strip(),
                     )
                     st.session_state[step_key] = 2
                     st.rerun()
@@ -908,11 +701,14 @@ def new_character_interview(session: Session, campaign: Campaign, players: list[
             "Enter the final assigned scores. The engine will derive modifiers and save bonuses."
         )
         methods = [
-            "Dice roll (4d6, drop lowest)", "Standard array",
-            "Point buy final scores", "Manual entry",
+            "Dice roll (4d6, drop lowest)",
+            "Standard array",
+            "Point buy final scores",
+            "Manual entry",
         ]
         method = st.selectbox(
-            "Generation method", methods,
+            "Generation method",
+            methods,
             index=methods.index(draft.get("ability_method", methods[0])),
             key=f"interview_ability_method_{campaign.id}",
         )
@@ -930,7 +726,9 @@ def new_character_interview(session: Session, campaign: Campaign, players: list[
             maximum_score = 15 if method == "Point buy final scores" else 20
             ability_values = {
                 ability_name: st.number_input(
-                    ability_name, minimum_score, maximum_score,
+                    ability_name,
+                    minimum_score,
+                    maximum_score,
                     min(
                         maximum_score,
                         max(minimum_score, stored_scores.get(ability_name, defaults[index])),
@@ -940,7 +738,7 @@ def new_character_interview(session: Session, campaign: Campaign, players: list[
                 for index, ability_name in enumerate(ABILITY_NAMES)
             }
             if method == "Point buy final scores":
-                spent_points = point_buy_total(ability_values)
+                spent_points = domain_point_buy_total(ability_values)
                 st.caption(
                     f"Point buy: {spent_points}/{POINT_BUY_BUDGET} points spent. "
                     "Scores must use the full 27-point budget."
@@ -954,7 +752,7 @@ def new_character_interview(session: Session, campaign: Campaign, players: list[
             if forward.form_submit_button("Continue to combat details", type="primary"):
                 if (
                     method == "Point buy final scores"
-                    and point_buy_total(ability_values) != POINT_BUY_BUDGET
+                    and domain_point_buy_total(ability_values) != POINT_BUY_BUDGET
                 ):
                     st.error("Point buy must spend exactly 27 points before continuing.")
                 else:
@@ -972,14 +770,16 @@ def new_character_interview(session: Session, campaign: Campaign, players: list[
         class_name = draft.get("class_name", "Fighter")
         derived_base_ac = 10 + dexterity_modifier
         derived_max_hp = max(1, HIT_DIE_SIZES[class_name] + constitution_modifier)
-        derived_proficiency = proficiency_bonus_for_level(level)
+        derived_proficiency = domain_proficiency_bonus_for_level(level)
         derived_passive_perception = 10 + (ability_values.get("Wisdom", 10) - 10) // 2
         derived_hit_die = HIT_DICE[class_name]
         derived_spellcasting = SPELLCASTING_ABILITIES.get(class_name, "")
         with st.form("character_interview_combat"):
             left, middle, right = st.columns(3)
             armor_class = left.number_input(
-                "Armor class (current)", 0, 40,
+                "Armor class (current)",
+                0,
+                40,
                 draft.get("armor_class", derived_base_ac),
             )
             left.caption(
@@ -1004,9 +804,13 @@ def new_character_interview(session: Session, campaign: Campaign, players: list[
                 st.rerun()
             if forward.form_submit_button("Continue to story and features", type="primary"):
                 draft.update(
-                    armor_class=armor_class, max_hp=max_hp, speed=speed,
-                    proficiency_bonus=proficiency, passive_perception=passive_perception,
-                    hit_dice=hit_dice.strip(), spellcasting_ability=spellcasting.strip(),
+                    armor_class=armor_class,
+                    max_hp=max_hp,
+                    speed=speed,
+                    proficiency_bonus=proficiency,
+                    passive_perception=passive_perception,
+                    hit_dice=hit_dice.strip(),
+                    spellcasting_ability=spellcasting.strip(),
                 )
                 st.session_state[step_key] = 4
                 st.rerun()
@@ -1029,23 +833,35 @@ def new_character_interview(session: Session, campaign: Campaign, players: list[
                 st.rerun()
             if finish.form_submit_button("Finish character", type="primary"):
                 character = Character(
-                    campaign_id=campaign.id, player_id=draft.get("player_id"),
-                    name=draft["name"], kind=draft["kind"], ancestry=draft["ancestry"],
-                    class_name=draft["class_name"], level=draft["level"],
-                    armor_class=draft["armor_class"], max_hp=draft["max_hp"],
-                    current_hp=draft["max_hp"], notes=notes.strip(),
+                    campaign_id=campaign.id,
+                    player_id=draft.get("player_id"),
+                    name=draft["name"],
+                    kind=draft["kind"],
+                    ancestry=draft["ancestry"],
+                    class_name=draft["class_name"],
+                    level=draft["level"],
+                    armor_class=draft["armor_class"],
+                    max_hp=draft["max_hp"],
+                    current_hp=draft["max_hp"],
+                    notes=notes.strip(),
                 )
                 character.sheet = CharacterSheet(
-                    background=draft["background"], alignment=draft["alignment"],
-                    speed=draft["speed"], proficiency_bonus=draft["proficiency_bonus"],
-                    passive_perception=draft["passive_perception"], hit_dice=draft["hit_dice"],
-                    spellcasting_ability=draft["spellcasting_ability"], notes=draft["concept"],
+                    background=draft["background"],
+                    alignment=draft["alignment"],
+                    speed=draft["speed"],
+                    proficiency_bonus=draft["proficiency_bonus"],
+                    passive_perception=draft["passive_perception"],
+                    hit_dice=draft["hit_dice"],
+                    spellcasting_ability=draft["spellcasting_ability"],
+                    notes=draft["concept"],
                 )
                 for ability_name, score in draft["ability_values"].items():
                     modifier = (score - 10) // 2
                     character.abilities.append(
                         CharacterAbility(
-                            ability_name=ability_name, score=score, modifier=modifier,
+                            ability_name=ability_name,
+                            score=score,
+                            modifier=modifier,
                             save_bonus=modifier,
                         )
                     )
@@ -1081,8 +897,11 @@ def render_character_sheet(character: Character) -> None:
         strict=True,
     ):
         ability = abilities.get(ability_name)
-        column.metric(ability_name[:3].upper(), ability.score if ability else "—",
-                      f"{ability.modifier:+d}" if ability else "")
+        column.metric(
+            ability_name[:3].upper(),
+            ability.score if ability else "—",
+            f"{ability.modifier:+d}" if ability else "",
+        )
     sheet = character.sheet
     rules = st.columns(5)
     rules[0].metric("Speed", sheet.speed if sheet else "—")
@@ -1093,9 +912,16 @@ def render_character_sheet(character: Character) -> None:
     if character.features:
         st.markdown("##### Features and proficiencies")
         st.dataframe(
-            [{"Feature": feature.name, "Category": feature.category,
-              "Reminder": feature.description} for feature in character.features],
-            use_container_width=True, hide_index=True,
+            [
+                {
+                    "Feature": feature.name,
+                    "Category": feature.category,
+                    "Reminder": feature.description,
+                }
+                for feature in character.features
+            ],
+            use_container_width=True,
+            hide_index=True,
         )
 
 
@@ -1151,30 +977,29 @@ def world_page(session: Session, campaign: Campaign) -> None:
         world_builder(session, campaign)
     with st.expander("Add to existing world"):
         world_add_flow(session, campaign)
-    st.divider()
-    st.markdown("#### Locations")
-    with st.form("add_location", clear_on_submit=True):
-        name = st.text_input("Location")
-        environment = st.text_input("Environment", placeholder="Urban, forest, dungeon…")
-        description = st.text_area("What players can observe")
-        secrets = st.text_area("DM-only secrets")
-        if st.form_submit_button("Add location", type="primary") and name.strip():
-            session.add(
-                Location(
-                    campaign_id=campaign.id,
-                    name=name.strip(),
-                    environment=environment,
-                    description=description,
-                    secrets=secrets,
+    with st.expander("Locations"):
+        with st.form("add_location", clear_on_submit=True):
+            name = st.text_input("Location")
+            environment = st.text_input("Environment", placeholder="Urban, forest, dungeon…")
+            description = st.text_area("What players can observe")
+            secrets = st.text_area("DM-only secrets")
+            if st.form_submit_button("Add location", type="primary") and name.strip():
+                session.add(
+                    Location(
+                        campaign_id=campaign.id,
+                        name=name.strip(),
+                        environment=environment,
+                        description=description,
+                        secrets=secrets,
+                    )
                 )
-            )
-            session.commit()
-            st.rerun()
-    for location in campaign_rows(session, Location, campaign.id):
-        with st.expander(f"{location.name} · {location.environment or 'Unclassified'}"):
-            st.write(location.description or "No public description yet.")
-            if location.secrets:
-                st.warning(f"DM secret: {location.secrets}")
+                session.commit()
+                st.rerun()
+        for location in campaign_rows(session, Location, campaign.id):
+            with st.expander(f"{location.name} · {location.environment or 'Unclassified'}"):
+                st.write(location.description or "No public description yet.")
+                if location.secrets:
+                    st.warning(f"DM secret: {location.secrets}")
 
 
 def world_add_flow(session: Session, campaign: Campaign) -> None:
@@ -1184,8 +1009,15 @@ def world_add_flow(session: Session, campaign: Campaign) -> None:
         change_type = st.selectbox(
             "What are you adding?",
             [
-                "Location", "Faction", "Historical event", "Culture", "Religion",
-                "Magic rule", "NPC group", "Conflict", "Adventure hook",
+                "Location",
+                "Faction",
+                "Historical event",
+                "Culture",
+                "Religion",
+                "Magic rule",
+                "NPC group",
+                "Conflict",
+                "Adventure hook",
             ],
         )
         title = st.text_input("Name or short title")
@@ -1201,8 +1033,14 @@ def world_add_flow(session: Session, campaign: Campaign) -> None:
         )
         intended_output = st.selectbox(
             "What should the DM get from it?",
-            ["NPC seed", "Quest hook", "Location detail", "Conflict", "Encounter idea",
-             "Player-facing description"],
+            [
+                "NPC seed",
+                "Quest hook",
+                "Location detail",
+                "Conflict",
+                "Encounter idea",
+                "Player-facing description",
+            ],
         )
         if st.form_submit_button("Save as draft change", type="primary"):
             if not title.strip() or not details.strip():
@@ -1210,9 +1048,13 @@ def world_add_flow(session: Session, campaign: Campaign) -> None:
             else:
                 session.add(
                     WorldDraftChange(
-                        campaign_id=campaign.id, change_type=change_type, title=title.strip(),
-                        placement=placement.strip(), details=details.strip(),
-                        consequences=consequences.strip(), visibility=visibility,
+                        campaign_id=campaign.id,
+                        change_type=change_type,
+                        title=title.strip(),
+                        placement=placement.strip(),
+                        details=details.strip(),
+                        consequences=consequences.strip(),
+                        visibility=visibility,
                         intended_output=intended_output,
                     )
                 )
@@ -1240,9 +1082,7 @@ def world_add_flow(session: Session, campaign: Campaign) -> None:
 def world_builder(session: Session, campaign: Campaign) -> None:
     draft_key = f"world_draft_{campaign.id}"
     step_key = f"world_step_{campaign.id}"
-    persisted_draft = session.scalar(
-        select(WorldDraft).where(WorldDraft.campaign_id == campaign.id)
-    )
+    persisted_draft = world_repository.get_draft(session, campaign.id)
     if draft_key not in st.session_state:
         st.session_state[draft_key] = (
             json.loads(persisted_draft.answers_json) if persisted_draft else {}
@@ -1301,27 +1141,36 @@ def world_builder(session: Session, campaign: Campaign) -> None:
                 options = (question.uncertainty_option, *question.options)
                 if question.response_type is WorldResponseType.SINGLE_CHOICE:
                     existing = draft.get(question.key, question.uncertainty_option)
-                    responses[question.key] = st.selectbox(
-                        question.key,
-                        options,
-                        index=options.index(existing) if existing in options else 0,
-                        label_visibility="collapsed",
-                    ) or ""
+                    responses[question.key] = (
+                        st.selectbox(
+                            question.key,
+                            options,
+                            index=options.index(existing) if existing in options else 0,
+                            label_visibility="collapsed",
+                        )
+                        or ""
+                    )
                 elif question.response_type is WorldResponseType.LONG_TEXT:
-                    responses[question.key] = st.text_area(
-                        question.key,
-                        value=draft.get(question.key, ""),
-                        height=120,
-                        placeholder=question.uncertainty_option,
-                        label_visibility="collapsed",
-                    ) or ""
+                    responses[question.key] = (
+                        st.text_area(
+                            question.key,
+                            value=draft.get(question.key, ""),
+                            height=120,
+                            placeholder=question.uncertainty_option,
+                            label_visibility="collapsed",
+                        )
+                        or ""
+                    )
                 else:
-                    responses[question.key] = st.text_input(
-                        question.key,
-                        value=draft.get(question.key, ""),
-                        placeholder=question.uncertainty_option,
-                        label_visibility="collapsed",
-                    ) or ""
+                    responses[question.key] = (
+                        st.text_input(
+                            question.key,
+                            value=draft.get(question.key, ""),
+                            placeholder=question.uncertainty_option,
+                            label_visibility="collapsed",
+                        )
+                        or ""
+                    )
             back, forward = st.columns(2)
             if step_index > 0 and back.form_submit_button("Back"):
                 for key, value in responses.items():
@@ -1341,8 +1190,6 @@ def world_builder(session: Session, campaign: Campaign) -> None:
                 st.session_state[f"world_review_opened_{campaign.id}"] = True
                 save_world_draft(session, campaign.id, draft, step_index, True, True)
                 st.rerun()
-
-    world_guidance_panel(session, campaign, current_step, draft)
 
     if st.session_state.get(f"world_review_{campaign.id}"):
         st.divider()
@@ -1372,9 +1219,7 @@ def world_builder(session: Session, campaign: Campaign) -> None:
             mime="text/markdown",
             key=f"download_world_{campaign.id}",
         )
-        existing_profile = session.scalar(
-            select(WorldProfile).where(WorldProfile.campaign_id == campaign.id)
-        )
+        existing_profile = world_repository.get_profile(session, campaign.id)
         if existing_profile is not None:
             st.success("This campaign already has an accepted world profile.")
         elif not any(check.severity == "missing" for check in checks) and st.button(
@@ -1418,12 +1263,8 @@ def world_builder(session: Session, campaign: Campaign) -> None:
             )
             session.add(profile)
             session.commit()
-            persisted_draft = session.scalar(
-                select(WorldDraft).where(WorldDraft.campaign_id == campaign.id)
-            )
-            if persisted_draft is not None:
-                session.delete(persisted_draft)
-                session.commit()
+            world_repository.delete_draft(session, campaign.id)
+            session.commit()
             st.session_state[f"world_accepted_{campaign.id}"] = True
             st.success("World accepted as canonical campaign data.")
             st.rerun()
@@ -1436,6 +1277,9 @@ def world_builder(session: Session, campaign: Campaign) -> None:
                 session.commit()
             st.rerun()
 
+    with st.expander("Optional world guide"):
+        world_guidance_panel(session, campaign, current_step, draft)
+
 
 def save_world_draft(
     session: Session,
@@ -1445,18 +1289,9 @@ def save_world_draft(
     is_reviewing: bool,
     review_opened: bool = False,
 ) -> None:
-    persisted_draft = session.scalar(
-        select(WorldDraft).where(WorldDraft.campaign_id == campaign_id)
+    world_repository.save_draft(
+        session, campaign_id, draft, current_step, is_reviewing, review_opened
     )
-    if persisted_draft is None:
-        persisted_draft = WorldDraft(campaign_id=campaign_id)
-        session.add(persisted_draft)
-    saved_draft = dict(draft)
-    saved_draft["_review_opened"] = "true" if review_opened else "false"
-    persisted_draft.answers_json = json.dumps(saved_draft)
-    persisted_draft.current_step = current_step
-    persisted_draft.is_reviewing = is_reviewing
-    persisted_draft.updated_at = datetime.now()
     session.commit()
 
 
@@ -1478,12 +1313,9 @@ def world_guidance_panel(
         key=f"world_guide_mode_{campaign.id}_{step.value}",
     )
     if st.button("Ask the guide", key=f"world_guide_{campaign.id}_{step.value}"):
-        existing_profile = session.scalar(
-            select(WorldProfile).where(WorldProfile.campaign_id == campaign.id)
-        )
+        existing_profile = world_repository.get_profile(session, campaign.id)
         existing_context = (
-            f"{existing_profile.name}: {existing_profile.premise}"
-            if existing_profile else ""
+            f"{existing_profile.name}: {existing_profile.premise}" if existing_profile else ""
         )
         prompt = build_world_guidance_prompt(
             mode=mode,
@@ -1493,9 +1325,9 @@ def world_guidance_panel(
         )
         try:
             with st.spinner("The guide is considering the next thread..."):
-                st.session_state[f"world_guide_result_{campaign.id}"] = (
-                    OllamaClient(get_settings()).generate(prompt)
-                )
+                st.session_state[f"world_guide_result_{campaign.id}"] = OllamaClient(
+                    get_settings()
+                ).generate(prompt)
         except OllamaError as error:
             st.error(str(error))
     result = st.session_state.get(f"world_guide_result_{campaign.id}")
@@ -1510,42 +1342,6 @@ def world_guidance_panel(
         if reject.button("Dismiss suggestion", key=f"dismiss_guide_{campaign.id}"):
             st.session_state[f"world_guide_result_{campaign.id}"] = None
             st.rerun()
-
-
-def journal_page(session: Session, campaign: Campaign) -> None:
-    st.subheader("Journal")
-    search = st.text_input("Search entries", placeholder="Title, event, place, or tag")
-    with st.form("add_journal", clear_on_submit=True):
-        title = st.text_input("Entry title")
-        body = st.text_area("What happened?", height=180)
-        tags = st.text_input("Tags", placeholder="session-03, Waterdeep, faction")
-        if st.form_submit_button("Record event", type="primary") and title.strip() and body.strip():
-            session.add(
-                JournalEntry(
-                    campaign_id=campaign.id, title=title.strip(), body=body.strip(), tags=tags
-                )
-            )
-            session.commit()
-            st.rerun()
-    entries = list(
-        session.scalars(
-            select(JournalEntry)
-            .where(JournalEntry.campaign_id == campaign.id)
-            .order_by(JournalEntry.occurred_at.desc())
-        )
-    )
-    if search.strip():
-        needle = search.casefold()
-        entries = [
-            entry
-            for entry in entries
-            if needle in " ".join([entry.title, entry.body, entry.tags]).casefold()
-        ]
-    st.caption(f"{len(entries)} entr{'y' if len(entries) == 1 else 'ies'} shown")
-    for entry in entries:
-        st.markdown(f"#### {entry.title}")
-        st.caption(f"{entry.occurred_at:%Y-%m-%d %H:%M} · {entry.tags or 'untagged'}")
-        st.write(entry.body)
 
 
 def quests_page(session: Session, campaign: Campaign) -> None:
@@ -1587,14 +1383,16 @@ def quests_page(session: Session, campaign: Campaign) -> None:
 def quest_workspace(session: Session, campaign: Campaign, quest: Quest) -> None:
     st.markdown(f"### {quest.title} · construction")
     st.caption(
-        f"{quest.status} · {len(quest.chapters)} chapters · "
-        f"{len(quest.objectives)} objectives"
+        f"{quest.status} · {len(quest.chapters)} chapters · {len(quest.objectives)} objectives"
     )
     blueprint_tab, chapters_tab, links_tab = st.tabs(["Blueprint", "Chapters", "Links"])
     with blueprint_tab:
         with st.form(f"quest_blueprint_{quest.id}"):
-            status = st.selectbox("Quest status", [item.value for item in QuestStatus],
-                                  index=[item.value for item in QuestStatus].index(quest.status))
+            status = st.selectbox(
+                "Quest status",
+                [item.value for item in QuestStatus],
+                index=[item.value for item in QuestStatus].index(quest.status),
+            )
             hook = st.text_area("Hook", value=quest.hook)
             through_line = st.text_area("Through-line", value=quest.objective)
             summary_reward = st.text_input("Summary reward", value=quest.reward)
@@ -1614,10 +1412,15 @@ def quest_workspace(session: Session, campaign: Campaign, quest: Quest) -> None:
                 condition = st.text_area("Condition")
                 effect = st.text_area("Effect")
                 if st.form_submit_button("Add trigger") and name.strip():
-                    session.add(QuestTrigger(
-                        quest=quest, name=name.strip(), trigger_type=trigger_type,
-                        condition=condition, effect=effect,
-                    ))
+                    session.add(
+                        QuestTrigger(
+                            quest=quest,
+                            name=name.strip(),
+                            trigger_type=trigger_type,
+                            condition=condition,
+                            effect=effect,
+                        )
+                    )
                     session.commit()
                     st.rerun()
             for trigger in quest.triggers:
@@ -1632,16 +1435,23 @@ def quest_workspace(session: Session, campaign: Campaign, quest: Quest) -> None:
             summary = st.text_area("What happens here?")
             dm_notes = st.text_area("DM-only chapter notes")
             if st.form_submit_button("Add chapter") and title.strip():
-                session.add(QuestChapter(
-                    quest=quest, title=title.strip(), sort_order=len(quest.chapters) + 1,
-                    status=chapter_status, summary=summary, dm_notes=dm_notes,
-                ))
+                session.add(
+                    QuestChapter(
+                        quest=quest,
+                        title=title.strip(),
+                        sort_order=len(quest.chapters) + 1,
+                        status=chapter_status,
+                        summary=summary,
+                        dm_notes=dm_notes,
+                    )
+                )
                 session.commit()
                 st.rerun()
         if quest.chapters:
             chapter = st.selectbox("Chapter", quest.chapters, format_func=lambda item: item.title)
-            with st.expander(f"Add objective to {chapter.title}", expanded=True), st.form(
-                f"objective_{chapter.id}", clear_on_submit=True
+            with (
+                st.expander(f"Add objective to {chapter.title}", expanded=True),
+                st.form(f"objective_{chapter.id}", clear_on_submit=True),
             ):
                 objective_title = st.text_input("Objective title")
                 objective_description = st.text_area("Objective details")
@@ -1666,8 +1476,7 @@ def quest_workspace(session: Session, campaign: Campaign, quest: Quest) -> None:
             for chapter_objective in chapter.objectives:
                 visibility = "hidden" if chapter_objective.is_hidden else "visible"
                 st.markdown(
-                    f"**{chapter_objective.title}** · "
-                    f"{chapter_objective.status} · {visibility}"
+                    f"**{chapter_objective.title}** · {chapter_objective.status} · {visibility}"
                 )
                 st.caption(chapter_objective.description or "No details recorded.")
         else:
@@ -1678,11 +1487,17 @@ def quest_workspace(session: Session, campaign: Campaign, quest: Quest) -> None:
         locations = campaign_rows(session, Location, campaign.id)
         with st.form(f"quest_link_{quest.id}"):
             left, right = st.columns(2)
-            item = left.selectbox("Required / mentioned item", [None, *items],
-                                 format_func=lambda value: "None" if value is None else value.name)
+            item = left.selectbox(
+                "Required / mentioned item",
+                [None, *items],
+                format_func=lambda value: "None" if value is None else value.name,
+            )
             item_role = left.text_input("Item role", value="Required")
-            npc = right.selectbox("NPC / character", [None, *characters],
-                                  format_func=lambda value: "None" if value is None else value.name)
+            npc = right.selectbox(
+                "NPC / character",
+                [None, *characters],
+                format_func=lambda value: "None" if value is None else value.name,
+            )
             npc_role = right.text_input("NPC role", value="NPC")
             if st.form_submit_button("Add links"):
                 if item:
@@ -1705,10 +1520,15 @@ def quest_workspace(session: Session, campaign: Campaign, quest: Quest) -> None:
                 experience = st.number_input("Experience points", 0, 999999, 0)
                 gold = st.number_input("Gold pieces", 0, 999999, 0)
                 if st.form_submit_button("Add reward") and title.strip():
-                    session.add(QuestReward(
-                        quest=quest, title=title.strip(), description=description,
-                        experience_points=experience, gold_pieces=gold,
-                    ))
+                    session.add(
+                        QuestReward(
+                            quest=quest,
+                            title=title.strip(),
+                            description=description,
+                            experience_points=experience,
+                            gold_pieces=gold,
+                        )
+                    )
                     session.commit()
                     st.rerun()
             for quest_reward in quest.rewards:
@@ -1860,7 +1680,9 @@ def writer_page(session: Session, campaign: Campaign) -> None:
         )
         try:
             with st.spinner(f"Consulting {model}…"):
-                st.session_state.generated_script = OllamaClient(settings).generate(prompt, model)
+                st.session_state.generated_script = OllamaClient(settings).generate(
+                    prompt, model=model
+                )
         except OllamaError as error:
             st.error(str(error))
     if script := st.session_state.get("generated_script"):
@@ -1869,25 +1691,25 @@ def writer_page(session: Session, campaign: Campaign) -> None:
 
 
 def main() -> None:
-    render_theme()
+    render_ui_theme()
     engine = database_engine()
     initialize_database(engine)
     with session_scope(engine) as session:
-        workspace = workspace_navigation()
-        campaign = campaign_selector(session)
+        workspace = render_workspace_navigation()
+        campaign = render_campaign_context(session)
         if campaign is None:
             return
         pages = {
-            "The Table": table_page,
-            "Party": party_page,
-            "World": world_page,
-            "Journal": journal_page,
-            "Quests": quests_page,
-            "Combat": combat_page,
-            "Writer": writer_page,
+            "The Table": render_table_page,
+            "Party": render_party_page,
+            "World": render_world_page,
+            "Journal": render_journal_page,
+            "Quests": render_quests_page,
+            "Combat": render_combat_page,
+            "Writer": render_writer_page,
         }
         if workspace == "Briefing":
-            dashboard(session, campaign)
+            render_briefing(session, campaign)
         else:
             pages[workspace](session, campaign)
 
