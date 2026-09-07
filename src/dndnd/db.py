@@ -38,3 +38,39 @@ def session_scope(engine: Engine) -> Iterator[Session]:
 
 def initialize_database(engine: Engine) -> None:
     Base.metadata.create_all(engine)
+    if engine.dialect.name == "sqlite":
+        with engine.begin() as connection:
+            columns = {
+                row[1] for row in connection.exec_driver_sql("PRAGMA table_info(session_runs)")
+            }
+            if "character_id" not in columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE session_runs ADD COLUMN character_id INTEGER "
+                    "REFERENCES characters(id) ON DELETE SET NULL"
+                )
+            if "game_id" not in columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE session_runs ADD COLUMN game_id INTEGER "
+                    "REFERENCES games(id) ON DELETE SET NULL"
+                )
+            if "quest_id" not in columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE session_runs ADD COLUMN quest_id INTEGER "
+                    "REFERENCES quests(id) ON DELETE SET NULL"
+                )
+            game_columns = {
+                row[1] for row in connection.exec_driver_sql("PRAGMA table_info(games)")
+            }
+            if game_columns and "quest_id" not in game_columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE games ADD COLUMN quest_id INTEGER "
+                    "REFERENCES quests(id) ON DELETE SET NULL"
+                )
+            sheet_columns = {
+                row[1] for row in connection.exec_driver_sql("PRAGMA table_info(character_sheets)")
+            }
+            if sheet_columns and "ability_score_method" not in sheet_columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE character_sheets "
+                    "ADD COLUMN ability_score_method VARCHAR(60) DEFAULT ''"
+                )

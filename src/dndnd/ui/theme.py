@@ -22,56 +22,6 @@ def render_theme() -> None:
         .block-container { max-width: 1440px; padding-top: 2rem; }
         [data-testid="stSidebar"] { border-right: 1px solid var(--line); }
         [data-testid="stSidebar"] > div:first-child { padding-top: 2rem; }
-        [data-testid="stSidebar"] [data-testid="stRadio"] {
-            width: 100% !important; max-width: none !important;
-            flex: 1 1 100% !important; align-self: stretch !important;
-        }
-        [data-testid="stSidebar"] [data-testid="stElementContainer"]:has(
-            [data-testid="stRadio"]
-        ) {
-            width: 100% !important; max-width: none !important;
-            flex: 1 1 100% !important; align-self: stretch !important;
-        }
-        [data-testid="stSidebar"] [data-testid="stRadioGroup"],
-        [data-testid="stSidebar"] [role="radiogroup"] {
-            width: 100% !important; max-width: none !important;
-        }
-        [data-testid="stSidebar"] [role="radiogroup"] { gap: .5rem; }
-        [data-testid="stSidebar"] [data-testid="stRadioOption"] {
-            width: 100% !important; max-width: none !important;
-            flex: 1 1 100% !important; box-sizing: border-box;
-        }
-        [data-testid="stSidebar"] [role="radiogroup"] > div,
-        [data-testid="stSidebar"] [role="radiogroup"] > div > label,
-        [data-testid="stSidebar"] [role="radiogroup"] > div > label > div,
-        [data-testid="stSidebar"] [role="radiogroup"] > label > div,
-        [data-testid="stSidebar"] [role="radiogroup"] [data-baseweb="radio"] {
-            width: 100% !important; max-width: none !important; box-sizing: border-box;
-        }
-        [data-testid="stSidebar"] [role="radiogroup"] > label {
-            display: flex; width: 100%; box-sizing: border-box; padding: .7rem .85rem; margin: 0;
-            border: 1px solid var(--line); border-radius: 6px;
-            background: rgba(255, 253, 247, .64); cursor: pointer;
-            transition: background .15s ease, color .15s ease, border-color .15s ease;
-        }
-        [data-testid="stSidebar"] [role="radiogroup"] > div > label,
-        [data-testid="stSidebar"] [role="radiogroup"] > div > label > div {
-            display: flex; padding: .7rem .85rem; margin: 0; border: 1px solid var(--line);
-            border-radius: 6px; background: rgba(255, 253, 247, .64); cursor: pointer;
-        }
-        [data-testid="stSidebar"] [role="radiogroup"] > label:hover {
-            border-color: var(--brass); background: var(--paper);
-        }
-        [data-testid="stSidebar"] [role="radiogroup"] > label:has(input:checked),
-        [data-testid="stSidebar"] [role="radiogroup"] > div > label:has(input:checked),
-        [data-testid="stSidebar"] [role="radiogroup"] > div > label:has(input:checked) > div {
-            border-color: var(--ember); background: var(--ember); color: white;
-        }
-        [data-testid="stSidebar"] [role="radiogroup"] > label:has(input:checked) p,
-        [data-testid="stSidebar"] [role="radiogroup"] > label:has(input:checked) span {
-            color: white;
-        }
-        [data-testid="stSidebar"] [role="radiogroup"] input { display: none; }
         h1, h2, h3, h4 { letter-spacing: 0; color: var(--ink); }
         p, label, [data-testid="stMarkdownContainer"] { color: var(--ink); }
         .campaign-hero {

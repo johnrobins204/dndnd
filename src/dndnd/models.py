@@ -1,7 +1,16 @@
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -108,11 +117,19 @@ class SessionRunStatus(StrEnum):
     COMPLETE = "Complete"
 
 
+class GameStatus(StrEnum):
+    PLANNED = "Planned"
+    ACTIVE = "Active"
+    COMPLETE = "Complete"
+
+
 class SessionEntryKind(StrEnum):
     SCENE = "Scene"
     NARRATION = "Narration"
     DM_NOTE = "DM note"
     TABLE_NOTE = "Table note"
+    CHAT_INPUT = "Chat input"
+    CHAT_OUTPUT = "Chat output"
     SYSTEM = "System"
 
 
@@ -148,6 +165,9 @@ class Campaign(Base):
         back_populates="campaign", cascade="all, delete-orphan"
     )
     session_runs: Mapped[list["SessionRun"]] = relationship(
+        back_populates="campaign", cascade="all, delete-orphan"
+    )
+    games: Mapped[list["Game"]] = relationship(
         back_populates="campaign", cascade="all, delete-orphan"
     )
     world_profile: Mapped["WorldProfile | None"] = relationship(
@@ -202,6 +222,11 @@ class Character(Base):
     quest_links: Mapped[list["QuestCharacter"]] = relationship(
         back_populates="character", cascade="all, delete-orphan"
     )
+    games: Mapped[list["Game"]] = relationship(back_populates="character")
+    game_links: Mapped[list["GameCharacter"]] = relationship(
+        back_populates="character", cascade="all, delete-orphan"
+    )
+    session_runs: Mapped[list["SessionRun"]] = relationship(back_populates="character")
 
 
 class Location(Base):
@@ -227,10 +252,14 @@ class Quest(Base):
     notes: Mapped[str] = mapped_column(Text, default="")
     campaign: Mapped[Campaign] = relationship(back_populates="quests")
     chapters: Mapped[list["QuestChapter"]] = relationship(
-        back_populates="quest", cascade="all, delete-orphan", order_by="QuestChapter.sort_order"
+        back_populates="quest",
+        cascade="all, delete-orphan",
+        order_by="QuestChapter.sort_order",
     )
     objectives: Mapped[list["QuestObjective"]] = relationship(
-        back_populates="quest", cascade="all, delete-orphan", order_by="QuestObjective.sort_order"
+        back_populates="quest",
+        cascade="all, delete-orphan",
+        order_by="QuestObjective.sort_order",
     )
     triggers: Mapped[list["QuestTrigger"]] = relationship(
         back_populates="quest", cascade="all, delete-orphan"
@@ -247,6 +276,8 @@ class Quest(Base):
     npc_links: Mapped[list["QuestCharacter"]] = relationship(
         back_populates="quest", cascade="all, delete-orphan"
     )
+    table_games: Mapped[list["Game"]] = relationship(back_populates="quest")
+    session_runs: Mapped[list["SessionRun"]] = relationship(back_populates="quest")
 
 
 class JournalEntry(Base):
@@ -309,6 +340,7 @@ class CharacterSheet(Base):
     spellcasting_ability: Mapped[str] = mapped_column(String(30), default="")
     spell_save_dc: Mapped[int | None] = mapped_column(Integer)
     spell_attack_bonus: Mapped[int | None] = mapped_column(Integer)
+    ability_score_method: Mapped[str] = mapped_column(String(60), default="")
     notes: Mapped[str] = mapped_column(Text, default="")
     character: Mapped[Character] = relationship(back_populates="sheet")
 
@@ -439,7 +471,9 @@ class QuestChapter(Base):
     dm_notes: Mapped[str] = mapped_column(Text, default="")
     quest: Mapped[Quest] = relationship(back_populates="chapters")
     objectives: Mapped[list["QuestObjective"]] = relationship(
-        back_populates="chapter", cascade="all, delete-orphan", order_by="QuestObjective.sort_order"
+        back_populates="chapter",
+        cascade="all, delete-orphan",
+        order_by="QuestObjective.sort_order",
     )
     triggers: Mapped[list["QuestTrigger"]] = relationship(
         back_populates="chapter", cascade="all, delete-orphan"
@@ -512,6 +546,35 @@ class QuestMap(Base):
     map: Mapped[CampaignMap] = relationship(back_populates="quest_links")
 
 
+class Game(Base):
+    __tablename__ = "games"
+    __table_args__ = (UniqueConstraint("campaign_id", "character_id", "name"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    campaign_id: Mapped[int] = mapped_column(ForeignKey("campaigns.id", ondelete="CASCADE"))
+    character_id: Mapped[int] = mapped_column(ForeignKey("characters.id", ondelete="CASCADE"))
+    quest_id: Mapped[int | None] = mapped_column(ForeignKey("quests.id", ondelete="SET NULL"))
+    name: Mapped[str] = mapped_column(String(160))
+    status: Mapped[str] = mapped_column(String(30), default=GameStatus.ACTIVE)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    campaign: Mapped[Campaign] = relationship(back_populates="games")
+    character: Mapped[Character] = relationship(back_populates="games")
+    quest: Mapped[Quest | None] = relationship(back_populates="table_games")
+    character_links: Mapped[list["GameCharacter"]] = relationship(
+        back_populates="game", cascade="all, delete-orphan"
+    )
+    session_runs: Mapped[list["SessionRun"]] = relationship(back_populates="game")
+
+
+class GameCharacter(Base):
+    __tablename__ = "game_characters"
+    __table_args__ = (UniqueConstraint("game_id", "character_id"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    game_id: Mapped[int] = mapped_column(ForeignKey("games.id", ondelete="CASCADE"))
+    character_id: Mapped[int] = mapped_column(ForeignKey("characters.id", ondelete="CASCADE"))
+    game: Mapped[Game] = relationship(back_populates="character_links")
+    character: Mapped[Character] = relationship(back_populates="game_links")
+
+
 class QuestItem(Base):
     __tablename__ = "quest_items"
     __table_args__ = (UniqueConstraint("quest_id", "item_id", "role"),)
@@ -542,6 +605,11 @@ class SessionRun(Base):
     __tablename__ = "session_runs"
     id: Mapped[int] = mapped_column(primary_key=True)
     campaign_id: Mapped[int] = mapped_column(ForeignKey("campaigns.id", ondelete="CASCADE"))
+    game_id: Mapped[int | None] = mapped_column(ForeignKey("games.id", ondelete="SET NULL"))
+    character_id: Mapped[int | None] = mapped_column(
+        ForeignKey("characters.id", ondelete="SET NULL")
+    )
+    quest_id: Mapped[int | None] = mapped_column(ForeignKey("quests.id", ondelete="SET NULL"))
     title: Mapped[str] = mapped_column(String(160))
     session_number: Mapped[int | None] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(30), default=SessionRunStatus.PLANNED)
@@ -551,6 +619,9 @@ class SessionRun(Base):
     ended_at: Mapped[datetime | None] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     campaign: Mapped[Campaign] = relationship(back_populates="session_runs")
+    game: Mapped[Game | None] = relationship(back_populates="session_runs")
+    character: Mapped[Character | None] = relationship(back_populates="session_runs")
+    quest: Mapped[Quest | None] = relationship(back_populates="session_runs")
     entries: Mapped[list["SessionEntry"]] = relationship(
         back_populates="session_run",
         cascade="all, delete-orphan",

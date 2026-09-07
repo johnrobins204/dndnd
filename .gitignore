@@ -11,7 +11,7 @@ wheels/
 
 # Local application state and secrets
 .env
-data/
+/data/
 .streamlit/secrets.toml
 
 # Tool caches and reports
