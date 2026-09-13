@@ -10,11 +10,8 @@ Responsibilities:
 Run:
     python -m app.main
 """
+
 from __future__ import annotations
-
-import os
-os.environ["SDL_VIDEODRIVER"] = "dummy"
-
 
 import argparse
 import logging
